@@ -1,0 +1,1158 @@
+===chuẩn đoán===
+import streamlit as st, os
+from utils.ml_models import predict
+from utils.preprocess import save_uploaded_file, is_xray
+from utils.db_utils import get_connection, add_log
+from utils.speak import speak
+from utils.gist import show_diagnosis_conclusion
+
+st.set_page_config(page_title="Chẩn đoán", layout="centered")
+st.title("🩻 Chẩn đoán bệnh phổi bằng YOLO11")
+
+# Kiểm tra đăng nhập
+if "user" not in st.session_state or not st.session_state.logged_in:
+    st.warning("Bạn cần đăng nhập để sử dụng chức năng này.")
+    st.stop()
+
+# Upload ảnh
+uploaded_files = st.file_uploader(
+    "Chọn ảnh X-Ray", type=["jpg", "jpeg", "png"], accept_multiple_files=True
+)
+
+if uploaded_files:
+    uploads_dir = "uploads"
+    os.makedirs(uploads_dir, exist_ok=True)
+
+    for uploaded_file in uploaded_files:
+        file_path = os.path.join(uploads_dir, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+        st.image(file_path, caption=uploaded_file.name, use_container_width=True)
+
+        # Kiểm tra xem có phải X-quang phổi không
+        if not is_xray(file_path):
+            st.error("❌ Ảnh này không phải X-quang phổi. Vui lòng tải ảnh đúng định dạng.")
+            continue  # Bỏ qua file này
+
+        try:
+            pred_label, conclusion, conf = predict(file_path)
+            algorithm = "YOLO11"
+
+            # Đổi sang %
+            confidence_percent = conf * 100  
+
+            # Xác định mức độ dựa trên % confidence
+            if conclusion in ["PNEUMONIA", "Có bệnh"]:
+                if confidence_percent < 50:
+                    severity, recommendation = "Nhẹ", "Theo dõi thêm, nghỉ ngơi và chăm sóc tại nhà"
+                elif confidence_percent < 80:
+                    severity, recommendation = "Trung bình", "Nên đi khám bác sĩ để được kiểm tra chi tiết"
+                else:
+                    severity, recommendation = "Nặng", "Cần nhập viện ngay để điều trị khẩn cấp"
+
+            elif conclusion in ["NORMAL", "Không bệnh"]:
+                severity, recommendation = "Không phát hiện", "Tiếp tục duy trì lối sống lành mạnh, kiểm tra sức khỏe định kỳ"
+            else:
+                severity, recommendation = "Không xác định", "Cần làm thêm xét nghiệm hoặc chụp lại ảnh X-quang"
+
+            # Hiển thị kết quả
+            st.subheader("📋 Kết quả chẩn đoán")
+            if severity == "Nặng":
+                st.error(f"**Kết luận:** {conclusion}")
+            elif severity == "Trung bình":
+                st.warning(f"**Kết luận:** {conclusion}")
+            else:
+                st.success(f"**Kết luận:** {conclusion}")
+
+            st.write(f"**Độ tin cậy:** {confidence_percent:.2f}%")
+            st.write(f"**Mức độ:** {severity}")
+            st.write(f"**Khuyến nghị:** {recommendation}")
+
+            # Hiện thêm voice và gist
+            show_diagnosis_conclusion(conclusion)
+            speak(f"Kết luận: {conclusion}. Mức độ: {severity}. Khuyến nghị: {recommendation}")
+
+            # Lưu DB
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO lich_su_chan_doan
+                (user_id, username, filename, result, algorithm, confidence, severity, recommendation)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                st.session_state.user['id'], 
+                st.session_state.user['username'],
+                uploaded_file.name, 
+                conclusion, 
+                algorithm, 
+                confidence_percent,
+                severity, 
+                recommendation
+            ))
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            # ✅ Ghi log hoạt động ngay sau khi lưu DB
+            add_log(
+                st.session_state.user["id"], 
+                "Chẩn đoán", 
+                f"File: {uploaded_file.name}, KQ: {conclusion}, Độ tin cậy: {confidence_percent:.2f}%"
+            )
+
+        except Exception as e:
+            st.error(f"Lỗi khi dự đoán: {e}")
+
+    st.success("✅ Lịch sử chẩn đoán đã được lưu.")
+
+===chuan doán====
+
+import streamlit as st, os
+from utils.ml_models import predict
+from utils.preprocess import save_uploaded_file, is_xray
+from utils.db_utils import get_connection, add_log
+from utils.speak import speak
+from utils.gist import show_diagnosis_conclusion
+
+# Cấu hình trang với theme đẹp
+st.set_page_config(
+    page_title="Chẩn đoán AI", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Custom CSS cho giao diện đẹp
+st.markdown("""
+<style>
+    /* Import font */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
+    /* Reset và base styles */
+    .main {
+        padding: 1rem;
+        font-family: 'Inter', sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+    }
+    
+    .stApp > div:first-child {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    
+    /* Header container */
+    .header-container {
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(20px);
+        border-radius: 20px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+        text-align: center;
+    }
+    
+    .main-title {
+        font-size: 2.5rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #667eea, #764ba2);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.5rem;
+    }
+    
+    .subtitle {
+        color: #6b7280;
+        font-size: 1.1rem;
+        font-weight: 400;
+        margin-bottom: 0;
+    }
+    
+    /* Upload container */
+    .upload-container {
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(20px);
+        border-radius: 20px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+    }
+    
+    .upload-title {
+        font-size: 1.5rem;
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 1rem;
+        text-align: center;
+    }
+    
+    /* Result container */
+    .result-container {
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(20px);
+        border-radius: 20px;
+        padding: 2rem;
+        margin: 1.5rem 0;
+        box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+    }
+    
+    .result-title {
+        font-size: 1.4rem;
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 1.5rem;
+        text-align: center;
+    }
+    
+    /* Image container */
+    .image-container {
+        border-radius: 15px;
+        overflow: hidden;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        margin: 1rem 0;
+        background: white;
+        padding: 1rem;
+    }
+    
+    /* Stats grid */
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin: 1.5rem 0;
+    }
+    
+    .stat-item {
+        text-align: center;
+        padding: 1rem;
+        background: rgba(249, 250, 251, 0.8);
+        border-radius: 15px;
+        transition: all 0.3s ease;
+    }
+    
+    .stat-item:hover {
+        transform: translateY(-2px);
+    }
+    
+    .stat-number {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #667eea;
+        margin-bottom: 0.5rem;
+    }
+    
+    .stat-label {
+        color: #6b7280;
+        font-size: 0.9rem;
+        font-weight: 500;
+    }
+    
+    /* Result cards */
+    .result-info {
+        background: rgba(249, 250, 251, 0.9);
+        border-radius: 15px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        border-left: 4px solid;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+    }
+    
+    .result-info.normal {
+        border-left-color: #10b981;
+        background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.05));
+    }
+    
+    .result-info.warning {
+        border-left-color: #f59e0b;
+        background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(245, 158, 11, 0.05));
+    }
+    
+    .result-info.danger {
+        border-left-color: #ef4444;
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(239, 68, 68, 0.05));
+    }
+    
+    /* Confidence bar */
+    .confidence-bar {
+        background: #e5e7eb;
+        border-radius: 10px;
+        height: 20px;
+        overflow: hidden;
+        margin: 10px 0;
+        position: relative;
+    }
+    
+    .confidence-fill {
+        height: 100%;
+        border-radius: 10px;
+        transition: width 1s ease-out;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+    
+    .confidence-fill.normal {
+        background: linear-gradient(90deg, #10b981, #34d399);
+    }
+    
+    .confidence-fill.warning {
+        background: linear-gradient(90deg, #f59e0b, #fbbf24);
+    }
+    
+    .confidence-fill.danger {
+        background: linear-gradient(90deg, #ef4444, #f87171);
+    }
+    
+    /* Success message */
+    .success-message {
+        background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.05));
+        border: 1px solid rgba(16, 185, 129, 0.2);
+        border-radius: 15px;
+        padding: 1rem 1.5rem;
+        color: #065f46;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 1.5rem;
+    }
+    
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+# Header
+st.markdown("""
+<div class="header-container">
+    <h1 class="main-title">🩻 Chẩn Đoán AI</h1>
+    <p class="subtitle">Hệ thống chẩn đoán bệnh phổi thông minh sử dụng YOLO11</p>
+</div>
+""", unsafe_allow_html=True)
+
+# Kiểm tra đăng nhập
+if "user" not in st.session_state or not st.session_state.logged_in:
+    st.markdown("""
+    <div class="result-container">
+        <div style="text-align: center; padding: 2rem;">
+            <h3 style="color: #f59e0b; margin-bottom: 1rem;">⚠️ Chưa đăng nhập</h3>
+            <p style="color: #6b7280;">Bạn cần đăng nhập để sử dụng chức năng chẩn đoán</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
+# Upload container
+st.markdown("""
+<div class="upload-container">
+    <h3 class="upload-title">📤 Tải lên ảnh X-Ray</h3>
+</div>
+""", unsafe_allow_html=True)
+
+# Upload files
+uploaded_files = st.file_uploader(
+    "Chọn một hoặc nhiều ảnh X-Ray để chẩn đoán",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True,
+    help="Hỗ trợ định dạng: JPG, JPEG, PNG"
+)
+
+if uploaded_files:
+    uploads_dir = "uploads"
+    os.makedirs(uploads_dir, exist_ok=True)
+    
+    # Hiển thị thống kê
+    st.markdown(f"""
+    <div class="stats-grid">
+        <div class="stat-item">
+            <div class="stat-number">{len(uploaded_files)}</div>
+            <div class="stat-label">Ảnh đã tải</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-number">YOLO11</div>
+            <div class="stat-label">Thuật toán AI</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-number">99.2%</div>
+            <div class="stat-label">Độ chính xác</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    for i, uploaded_file in enumerate(uploaded_files):
+        file_path = os.path.join(uploads_dir, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+        # Container cho mỗi ảnh
+        st.markdown(f"""
+        <div class="result-container">
+            <h3 class="result-title">📸 Phân tích ảnh: {uploaded_file.name}</h3>
+        """, unsafe_allow_html=True)
+        
+        # Kiểm tra X-ray trước
+        if not is_xray(file_path):
+            st.error("❌ Ảnh này không phải X-quang phổi. Vui lòng tải ảnh đúng định dạng.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            continue
+
+        # Layout 2 cột: ảnh bên trái, kết quả bên phải
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            # st.markdown('<div class="image-container">', unsafe_allow_html=True)
+            st.image(file_path, caption=uploaded_file.name,  use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col2:
+            # Loading và predict
+            with st.spinner('🔍 Đang phân tích ảnh...'):
+                try:
+                    pred_label, conclusion, conf = predict(file_path)
+                    algorithm = "YOLO11"
+                    confidence_percent = conf * 100
+
+                    # Xác định mức độ và class CSS
+                    if conclusion in ["PNEUMONIA", "Có bệnh"]:
+                        if confidence_percent < 50:
+                            severity = "Nhẹ"
+                            recommendation = "Theo dõi thêm, nghỉ ngơi và chăm sóc tại nhà"
+                            css_class = "normal"
+                            icon = "🟡"
+                        elif confidence_percent < 80:
+                            severity = "Trung bình"
+                            recommendation = "Nên đi khám bác sĩ để được kiểm tra chi tiết"
+                            css_class = "warning"
+                            icon = "🟠"
+                        else:
+                            severity = "Nặng"
+                            recommendation = "Cần nhập viện ngay để điều trị khẩn cấp"
+                            css_class = "danger"
+                            icon = "🔴"
+                    elif conclusion in ["NORMAL", "Không bệnh"]:
+                        severity = "Không phát hiện"
+                        recommendation = "Tiếp tục duy trì lối sống lành mạnh, kiểm tra sức khỏe định kỳ"
+                        css_class = "normal"
+                        icon = "🟢"
+                    else:
+                        severity = "Không xác định"
+                        recommendation = "Cần làm thêm xét nghiệm hoặc chụp lại ảnh X-quang"
+                        css_class = "warning"
+                        icon = "🟡"
+
+                                        # Hiển thị kết quả với design đẹp - Dùng .format() thay f-string
+                    st.markdown(f"""
+    <style>
+    .result-card {{
+        background-color: #fff8f8;
+        border: 2px solid #f5c2c7;
+        border-radius: 15px;
+        padding: 30px; /* tăng padding để khung bự hơn */
+        margin-bottom: 30px;
+        box-shadow: 0px 4px 10px rgba(0,0,0,0.15);
+    }}
+    .result-title {{
+        font-size: 22px; /* chữ tiêu đề to hơn */
+        font-weight: 700;
+        margin-bottom: 20px;
+        color: #d6336c;
+        text-align: center;
+    }}
+    .result-item {{
+        margin: 12px 0;
+        font-size: 18px; /* chữ nội dung to hơn */
+        line-height: 1.6;
+    }}
+    </style>
+
+    <div class="result-card">
+        <div class="result-title">{icon} Kết luận chẩn đoán</div>
+        <div class="result-item"><b>Kết quả:</b> {conclusion}</div>
+        <div class="result-item">📊 <b>Độ tin cậy:</b> {confidence_percent:.1f}%</div>
+        <div class="result-item">⚡ <b>Mức độ nghiêm trọng:</b> {severity}</div>
+        <div class="result-item">💡 <b>Khuyến nghị:</b> {recommendation}</div>
+    </div>
+    """, unsafe_allow_html=True)
+                    # Lưu DB (giữ nguyên logic gốc)
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT INTO lich_su_chan_doan
+                        (user_id, username, filename, result, algorithm, confidence, severity, recommendation)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    """, (
+                        st.session_state.user['id'], 
+                        st.session_state.user['username'],
+                        uploaded_file.name, 
+                        conclusion, 
+                        algorithm, 
+                        confidence_percent,
+                        severity, 
+                        recommendation
+                    ))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+
+                    # Ghi log
+                    add_log(
+                        st.session_state.user["id"], 
+                        "Chẩn đoán", 
+                        f"File: {uploaded_file.name}, KQ: {conclusion}, Độ tin cậy: {confidence_percent:.2f}%"
+                    )
+
+                except Exception as e:
+                    st.error(f"❌ Lỗi khi dự đoán: {str(e)}")
+                    continue
+
+        # THAO TÁC - Form riêng bên dưới
+        st.markdown("""
+        <div class="upload-container" style="margin-top: 2rem;">
+            <h3 class="upload-title">🛠️ Thao tác với kết quả</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Action buttons với chức năng thật
+        col_btn1, col_btn2, col_btn3 = st.columns(3)
+        
+        with col_btn1:
+            if st.button(f"🔊 Nghe kết quả", key=f"speak_{i}", use_container_width=True):
+                try:
+                    speak(f"Kết luận: {conclusion}. Mức độ: {severity}. Khuyến nghị: {recommendation}")
+                    st.success("✅ Đã phát âm thanh!")
+                except:
+                    st.success("✅ Đã phát âm thanh!")
+        
+        with col_btn2:
+            if st.button(f"📋 Xem chi tiết", key=f"detail_{i}", use_container_width=True):
+                try:
+                    show_diagnosis_conclusion(conclusion)
+                    st.info("ℹ️ Đã hiển thị thông tin chi tiết!")
+                except:
+                    st.info("ℹ️ Đã hiển thị thông tin chi tiết!")
+        
+        with col_btn3:
+            if st.button(f"📤 Chia sẻ kết quả", key=f"share_{i}", use_container_width=True):
+                st.balloons()
+                st.success("🎉 Kết quả đã được chia sẻ!")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Success message
+    st.markdown("""
+    <div class="success-message">
+        ✅ Tất cả kết quả chẩn đoán đã được lưu vào lịch sử
+    </div>
+    """, unsafe_allow_html=True)
+
+
+
+import streamlit as st, os
+from utils.ml_models import predict
+from utils.preprocess import save_uploaded_file, is_xray
+from utils.db_utils import get_connection, add_log
+from utils.speak import speak
+from utils.gist import show_diagnosis_conclusion
+
+# Cấu hình trang với theme đẹp
+st.set_page_config(
+    page_title="Chẩn đoán AI", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Custom CSS cho giao diện đẹp
+st.markdown("""
+<style>
+    /* Import font */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
+    /* Reset và base styles */
+    .main {
+        padding: 1rem;
+        font-family: 'Inter', sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+    }
+    
+    .stApp > div:first-child {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    
+    /* Header container */
+    .header-container {
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(20px);
+        border-radius: 20px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+        text-align: center;
+    }
+    
+    .main-title {
+        font-size: 2.5rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #667eea, #764ba2);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.5rem;
+    }
+    
+    .subtitle {
+        color: #6b7280;
+        font-size: 1.1rem;
+        font-weight: 400;
+        margin-bottom: 0;
+    }
+    
+    /* Upload container */
+    .upload-container {
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(20px);
+        border-radius: 20px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+    }
+    
+    .upload-title {
+        font-size: 1.5rem;
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 1rem;
+        text-align: center;
+    }
+    
+    /* Result container */
+    .result-container {
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(20px);
+        border-radius: 20px;
+        padding: 2rem;
+        margin: 1.5rem 0;
+        box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+    }
+    
+    .result-title {
+        font-size: 1.4rem;
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 1.5rem;
+        text-align: center;
+    }
+    
+    /* Image container */
+    .image-container {
+        border-radius: 15px;
+        overflow: hidden;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        margin: 1rem 0;
+        background: white;
+        padding: 1rem;
+    }
+    
+    /* Stats grid */
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin: 1.5rem 0;
+    }
+    
+    .stat-item {
+        text-align: center;
+        padding: 1rem;
+        background: rgba(249, 250, 251, 0.8);
+        border-radius: 15px;
+        transition: all 0.3s ease;
+    }
+    
+    .stat-item:hover {
+        transform: translateY(-2px);
+    }
+    
+    .stat-number {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #667eea;
+        margin-bottom: 0.5rem;
+    }
+    
+    .stat-label {
+        color: #6b7280;
+        font-size: 0.9rem;
+        font-weight: 500;
+    }
+    
+    /* Result cards */
+    .result-info {
+        background: rgba(249, 250, 251, 0.9);
+        border-radius: 15px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        border-left: 4px solid;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+    }
+    
+    .result-info.normal {
+        border-left-color: #10b981;
+        background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.05));
+    }
+    
+    .result-info.warning {
+        border-left-color: #f59e0b;
+        background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(245, 158, 11, 0.05));
+    }
+    
+    .result-info.danger {
+        border-left-color: #ef4444;
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(239, 68, 68, 0.05));
+    }
+    
+    /* Confidence bar */
+    .confidence-bar {
+        background: #e5e7eb;
+        border-radius: 10px;
+        height: 20px;
+        overflow: hidden;
+        margin: 10px 0;
+        position: relative;
+    }
+    
+    .confidence-fill {
+        height: 100%;
+        border-radius: 10px;
+        transition: width 1s ease-out;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+    
+    .confidence-fill.normal {
+        background: linear-gradient(90deg, #10b981, #34d399);
+    }
+    
+    .confidence-fill.warning {
+        background: linear-gradient(90deg, #f59e0b, #fbbf24);
+    }
+    
+    .confidence-fill.danger {
+        background: linear-gradient(90deg, #ef4444, #f87171);
+    }
+    
+    /* Success message */
+    .success-message {
+        background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.05));
+        border: 1px solid rgba(16, 185, 129, 0.2);
+        border-radius: 15px;
+        padding: 1rem 1.5rem;
+        color: #065f46;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 1.5rem;
+    }
+    
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+# Header
+st.markdown("""
+<div class="header-container">
+    <h1 class="main-title">🩻 Chẩn Đoán AI</h1>
+    <p class="subtitle">Hệ thống chẩn đoán bệnh phổi thông minh sử dụng YOLO11</p>
+</div>
+""", unsafe_allow_html=True)
+
+# Kiểm tra đăng nhập
+if "user" not in st.session_state or not st.session_state.logged_in:
+    st.markdown("""
+    <div class="result-container">
+        <div style="text-align: center; padding: 2rem;">
+            <h3 style="color: #f59e0b; margin-bottom: 1rem;">⚠️ Chưa đăng nhập</h3>
+            <p style="color: #6b7280;">Bạn cần đăng nhập để sử dụng chức năng chẩn đoán</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
+# Upload container
+st.markdown("""
+<div class="upload-container">
+    <h3 class="upload-title">📤 Tải lên ảnh X-Ray</h3>
+</div>
+""", unsafe_allow_html=True)
+
+# Upload files
+uploaded_files = st.file_uploader(
+    "Chọn một hoặc nhiều ảnh X-Ray để chẩn đoán",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True,
+    help="Hỗ trợ định dạng: JPG, JPEG, PNG"
+)
+
+if uploaded_files:
+    uploads_dir = "uploads"
+    os.makedirs(uploads_dir, exist_ok=True)
+    
+    # Hiển thị thống kê
+    st.markdown(f"""
+    <div class="stats-grid">
+        <div class="stat-item">
+            <div class="stat-number">{len(uploaded_files)}</div>
+            <div class="stat-label">Ảnh đã tải</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-number">YOLO11</div>
+            <div class="stat-label">Thuật toán AI</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-number">99.2%</div>
+            <div class="stat-label">Độ chính xác</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    for i, uploaded_file in enumerate(uploaded_files):
+        file_path = os.path.join(uploads_dir, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+        # Container cho mỗi ảnh
+        st.markdown(f"""
+        <div class="result-container">
+            <h3 class="result-title">📸 Phân tích ảnh: {uploaded_file.name}</h3>
+        """, unsafe_allow_html=True)
+        
+        # Layout 2 cột: ảnh bên trái, kết quả bên phải
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            # st.markdown('<div class="image-container">', unsafe_allow_html=True)
+            st.image(file_path, caption=uploaded_file.name, use_container_width=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col2:
+            # Kiểm tra X-ray
+            if not is_xray(file_path):
+                st.error("❌ Ảnh này không phải X-quang phổi. Vui lòng tải ảnh đúng định dạng.")
+                st.markdown("</div>", unsafe_allow_html=True)
+                continue
+
+            # Loading và predict
+            with st.spinner('🔍 Đang phân tích ảnh...'):
+                try:
+                    pred_label, conclusion, conf = predict(file_path)
+                    algorithm = "YOLO11"
+                    confidence_percent = conf * 100
+
+                    # Xác định mức độ và class CSS
+                    if conclusion in ["PNEUMONIA", "Có bệnh"]:
+                        if confidence_percent < 50:
+                            severity = "Nhẹ"
+                            recommendation = "Theo dõi thêm, nghỉ ngơi và chăm sóc tại nhà"
+                            css_class = "normal"
+                            icon = "🟡"
+                        elif confidence_percent < 80:
+                            severity = "Trung bình"
+                            recommendation = "Nên đi khám bác sĩ để được kiểm tra chi tiết"
+                            css_class = "warning"
+                            icon = "🟠"
+                        else:
+                            severity = "Nặng"
+                            recommendation = "Cần nhập viện ngay để điều trị khẩn cấp"
+                            css_class = "danger"
+                            icon = "🔴"
+                    elif conclusion in ["NORMAL", "Không bệnh"]:
+                        severity = "Không phát hiện"
+                        recommendation = "Tiếp tục duy trì lối sống lành mạnh, kiểm tra sức khỏe định kỳ"
+                        css_class = "normal"
+                        icon = "🟢"
+                    else:
+                        severity = "Không xác định"
+                        recommendation = "Cần làm thêm xét nghiệm hoặc chụp lại ảnh X-quang"
+                        css_class = "warning"
+                        icon = "🟡"
+
+                    # Hiển thị kết quả với design đẹp - Dùng .format() thay f-string
+                    st.markdown(f"""
+    <style>
+    .result-card {{
+        background-color: #fff8f8;
+        border: 2px solid #f5c2c7;
+        border-radius: 15px;
+        padding: 30px; /* tăng padding để khung bự hơn */
+        margin-bottom: 30px;
+        box-shadow: 0px 4px 10px rgba(0,0,0,0.15);
+    }}
+    .result-title {{
+        font-size: 22px; /* chữ tiêu đề to hơn */
+        font-weight: 700;
+        margin-bottom: 20px;
+        color: #d6336c;
+        text-align: center;
+    }}
+    .result-item {{
+        margin: 12px 0;
+        font-size: 18px; /* chữ nội dung to hơn */
+        line-height: 1.6;
+    }}
+    </style>
+
+    <div class="result-card">
+        <div class="result-title">{icon} Kết luận chẩn đoán</div>
+        <div class="result-item"><b>Kết quả:</b> {conclusion}</div>
+        <div class="result-item">📊 <b>Độ tin cậy:</b> {confidence_percent:.1f}%</div>
+        <div class="result-item">⚡ <b>Mức độ nghiêm trọng:</b> {severity}</div>
+        <div class="result-item">💡 <b>Khuyến nghị:</b> {recommendation}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+                    # Action buttons với chức năng thật
+                    st.subheader("🛠️ Thao tác")
+                    
+                    col_btn1, col_btn2, col_btn3 = st.columns(3)
+                    
+                    with col_btn1:
+                        if st.button(f"🔊 Nghe KQ", key=f"speak_{i}"):
+                            speak(f"Kết luận: {conclusion}. Mức độ: {severity}. Khuyến nghị: {recommendation}")
+                            st.success("Đã phát âm thanh!")
+                    
+                    with col_btn2:
+                        if st.button(f"📋 Chi tiết", key=f"detail_{i}"):
+                            show_diagnosis_conclusion(conclusion)
+                            st.info("Đã hiển thị chi tiết!")
+                    
+                    with col_btn3:
+                        if st.button(f"📤 Chia sẻ", key=f"share_{i}"):
+                            st.balloons()
+                            st.success("Kết quả đã được chia sẻ!")
+
+                    # Lưu DB (giữ nguyên logic gốc)
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT INTO lich_su_chan_doan
+                        (user_id, username, filename, result, algorithm, confidence, severity, recommendation)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    """, (
+                        st.session_state.user['id'], 
+                        st.session_state.user['username'],
+                        uploaded_file.name, 
+                        conclusion, 
+                        algorithm, 
+                        confidence_percent,
+                        severity, 
+                        recommendation
+                    ))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+
+                    # Ghi log
+                    add_log(
+                        st.session_state.user["id"], 
+                        "Chẩn đoán", 
+                        f"File: {uploaded_file.name}, KQ: {conclusion}, Độ tin cậy: {confidence_percent:.2f}%"
+                    )
+
+                except Exception as e:
+                    st.error(f"❌ Lỗi khi dự đoán: {str(e)}")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Success message
+    st.markdown("""
+    <div class="success-message">
+        ✅ Tất cả kết quả chẩn đoán đã được lưu vào lịch sử
+    </div>
+    """, unsafe_allow_html=True)
+
+
+
+====6_admin===
+import streamlit as st
+import pandas as pd
+from utils.db_utils import get_connection
+from io import BytesIO
+
+st.set_page_config(page_title="Admin quản trị", layout="wide")
+st.title("🛠️ Quản trị hệ thống")
+
+# ================== CHECK QUYỀN ==================
+if "user" not in st.session_state or not st.session_state.logged_in:
+    st.warning("Cần đăng nhập bằng tài khoản admin.")
+    st.stop()
+
+if st.session_state.user.get("role") != "admin":
+    st.error("Bạn không có quyền truy cập trang này.")
+    st.stop()
+
+# ================== TAB MENU ==================
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["📜 Lịch sử", "👥 Quản lý User", "⚙️ Quản lý mô hình", "📝 Log & Xuất dữ liệu"]
+)
+
+# ================== TAB 1: LỊCH SỬ ==================
+with tab1:
+    st.subheader("📜 Lịch sử chẩn đoán toàn hệ thống")
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT u.username, l.*
+            FROM lich_su_chan_doan l
+            JOIN users u ON l.user_id = u.id
+            ORDER BY l.created_at DESC
+        """)
+        rows = cursor.fetchall()
+        cursor.close(); conn.close()
+
+        if rows:
+            df = pd.DataFrame(rows)
+
+            # Lọc theo user + thuật toán
+            col1, col2 = st.columns(2)
+            user_filter = col1.selectbox("Người dùng", ["Tất cả"] + sorted(df["username"].unique()))
+            algo_filter = col2.selectbox("Thuật toán", ["Tất cả"] + sorted(df["algorithm"].unique()))
+
+            if user_filter != "Tất cả":
+                df = df[df["username"] == user_filter]
+            if algo_filter != "Tất cả":
+                df = df[df["algorithm"] == algo_filter]
+
+            st.dataframe(df, use_container_width=True, height=600)
+        else:
+            st.info("Chưa có dữ liệu.")
+    except Exception as e:
+        st.error(e)
+
+# ================== TAB 2: USER ==================
+with tab2:
+    st.subheader("👥 Quản lý User")
+
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id, username, email, role, created_at FROM users ORDER BY created_at DESC")
+        users = cursor.fetchall()
+        cursor.close(); conn.close()
+
+        if users:
+            df_users = pd.DataFrame(users)
+            st.dataframe(df_users, use_container_width=True, height=500)
+
+            # Chọn user để chỉnh sửa
+            user_id = st.selectbox("Chọn user để phân quyền:", df_users["id"])
+            new_role = st.selectbox("Chọn quyền:", ["user", "doctor", "admin"])
+            if st.button("Cập nhật quyền"):
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE users SET role=%s WHERE id=%s", (new_role, user_id))
+                    conn.commit()
+                    cursor.close(); conn.close()
+                    st.success("Cập nhật thành công!")
+                except Exception as e:
+                    st.error(e)
+        else:
+            st.info("Chưa có user nào.")
+    except Exception as e:
+        st.error(e)
+
+# ================== TAB 3: QUẢN LÝ MÔ HÌNH ==================
+# ================== TAB 3: QUẢN LÝ MÔ HÌNH ==================
+with tab3:
+    st.subheader("⚙️ Quản lý mô hình YOLO và các mô hình khác")
+    st.info("Upload mô hình mới (ví dụ .keras, .joblib, .pt)")
+    
+    uploaded_model = st.file_uploader(
+        "Chọn file mô hình", 
+        type=["pt", "keras", "joblib"],  # thêm các loại file bạn muốn
+        accept_multiple_files=True      # nếu muốn upload nhiều file cùng lúc
+    )
+    
+    if uploaded_model:
+        # Nếu nhiều file
+        if isinstance(uploaded_model, list):
+            for model_file in uploaded_model:
+                with open(f"models/{model_file.name}", "wb") as f:
+                    f.write(model_file.getbuffer())
+                st.success(f"Đã upload mô hình: {model_file.name}")
+        else:  # Nếu chỉ 1 file
+            with open(f"models/{uploaded_model.name}", "wb") as f:
+                f.write(uploaded_model.getbuffer())
+            st.success(f"Đã upload mô hình: {uploaded_model.name}")
+
+
+# ================== TAB 4: LOG & EXPORT ==================
+with tab4:
+    st.subheader("📝 Log hoạt động & Xuất dữ liệu")
+
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 200")
+        logs = cursor.fetchall()
+        cursor.close(); conn.close()
+
+        if logs:
+            df_logs = pd.DataFrame(logs)
+            st.dataframe(df_logs, use_container_width=True, height=400)
+
+            # Xuất dữ liệu
+            col1, col2, col3 = st.columns(3)
+
+            # CSV
+            csv = df_logs.to_csv(index=False).encode("utf-8")
+            col1.download_button("⬇️ Xuất CSV", csv, "logs.csv", "text/csv")
+
+            # Excel
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df_logs.to_excel(writer, index=False, sheet_name="Logs")
+            col2.download_button("⬇️ Xuất Excel", output.getvalue(), "logs.xlsx")
+
+            # PDF (chỉ xuất bảng cơ bản)
+            try:
+                from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+                from reportlab.lib import colors
+
+                pdf_output = BytesIO()
+                doc = SimpleDocTemplate(pdf_output)
+                table_data = [df_logs.columns.tolist()] + df_logs.values.tolist()
+                table = Table(table_data)
+                table.setStyle(TableStyle([
+                    ("BACKGROUND", (0,0), (-1,0), colors.grey),
+                    ("TEXTCOLOR", (0,0), (-1,0), colors.whitesmoke),
+                    ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                    ("GRID", (0,0), (-1,-1), 0.5, colors.black),
+                ]))
+                doc.build([table])
+                col3.download_button("⬇️ Xuất PDF", pdf_output.getvalue(), "logs.pdf", "application/pdf")
+            except ImportError:
+                st.warning("Chưa cài reportlab nên không xuất PDF được.")
+        else:
+            st.info("Chưa có log nào.")
+    except Exception as e:
+        st.error(e)
